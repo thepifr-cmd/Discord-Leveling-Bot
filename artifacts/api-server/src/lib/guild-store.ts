@@ -4,6 +4,8 @@ export type GuildConfig = {
   levelUpChannelId?: string;
   mainChannelId?: string;
   levelUpFormat?: string;
+  rankFormat?: string;
+  leaderboardFormats: Record<string, string>;
   chatXp: number;
   voiceXpPerMinute: number;
   xpGoalBase: number;
@@ -24,6 +26,7 @@ export type GuildConfig = {
   weeklyAnnouncementChannelId?: string;
   weeklyAnnouncementFormat?: string;
   statusType: "online" | "idle" | "dnd" | "invisible";
+  activityType: "streaming" | "vr" | "playing" | "listening" | "watching";
   statusMessage: string;
 };
 
@@ -33,6 +36,8 @@ export const defaultConfig: GuildConfig = {
   xpGoalBase: 100,
   xpGoalStep: 200,
   boosterAmount: 2,
+  rankFormat: "**Level [Level] • [Current XP]/[XP Goal] XP • [Percentage]%**\n[Progress Bar]\n<a:cup:1526827406160298036> Leaderboard Rank: #[All Time Rank]\n<:cal:1526827284923678791> Weekly Rank: <a:Chat:1526829172838633472> #[Weekly Message Rank] • <:Staffvcmod_SG:1526829293123141733> #[Weekly Voice Rank]",
+  leaderboardFormats: {},
   allowedMessageChannels: [],
   blockedMessageChannels: [],
   allowedVoiceChannels: [],
@@ -47,6 +52,7 @@ export const defaultConfig: GuildConfig = {
   weeklyAnnouncementFormat:
     "Weekly Chat Champions: [1st Person On Weekly Chat Leaderboard] — [1st Person Total Weekly Messages]\nWeekly Voice Champions: [1st Person On Weekly Voice Leaderboard] — [1st Person Total Weekly Voice Time]",
   statusType: "online",
+  activityType: "playing",
   statusMessage: "leveling up the server",
 };
 

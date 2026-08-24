@@ -34,6 +34,7 @@ const slashCommands = [
 const categories = ["allTime", "allTimeMessage", "allTimeVoice", "weeklyMessage", "weeklyVoice"] as const;
 const categoryLabels = ["All Time Ranking", "All Time Message", "All Time Voice", "Weekly Message", "Weekly Voice"];
 const icons = ["<:Ranked_One_Above_All:1526829944947216384> π", "<a:Chat:1526829172838633472> ∂", "<:Staffvcmod_SG:1526829293123141733> ∫", "<:cal:1526827284923678791> π", "<a:Clock:1526828668586823800> π"];
+const prefixlessCommands = new Set(["lb", "rank", "r", "help", "givexp", "gxp", "removexp", "rxp", "give-level", "gl", "remove-level", "rl", "reset", "res", "noprefix", "setup", "announce", "setstaff", "setadmin", "status", "say", "format"]);
 
 function isPrivileged(interactionOrMember: Interaction | GuildMember) {
   if (interactionOrMember instanceof GuildMember) {
@@ -47,6 +48,22 @@ function goal(config: typeof defaultConfig, level: number) { return config.xpGoa
 function progressBar(percent: number) {
   const filled = Math.max(0, Math.min(10, Math.round(percent / 10)));
   return "▰".repeat(filled) + "▱".repeat(10 - filled);
+}
+
+function applyTemplate(template: string, values: Record<string, string | number>) {
+  return template.replace(/\[([^\]]+)\]/g, (_, key: string) => values[key] === undefined ? `[${key}]` : String(values[key]));
+}
+
+function presenceType(type: string): { type: ActivityType; url?: string } {
+  if (type === "streaming") return { type: ActivityType.Streaming, url: "https://twitch.tv/" };
+  if (type === "listening") return { type: ActivityType.Listening };
+  if (type === "watching") return { type: ActivityType.Watching };
+  if (type === "vr") return { type: ActivityType.Custom };
+  return { type: ActivityType.Playing };
+}
+
+async function setBotPresence(type: string, message: string, status: "online" | "idle" | "dnd" | "invisible") {
+  await client.user?.setPresence({ activities: [{ name: message, ...presenceType(type) }], status });
 }
 
 async function levelCheck(guildId: string, userId: string, username: string, member?: GuildMember) {
@@ -89,7 +106,9 @@ async function sendLeaderboard(interaction: Interaction, categoryIndex: number, 
     new ButtonBuilder().setCustomId(`lb:${categoryIndex}:${safePage - 1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
     new ButtonBuilder().setCustomId(`lb:${categoryIndex}:${safePage + 1}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
   );
-  const content = `## ${title}\n--------------------------------------\n${lines.join("\n") || "No activity yet."}\n\n_Page ${safePage + 1}/${totalPages} • π_`;
+  const config = await getConfig(interaction.guild.id);
+  const template = config.leaderboardFormats[categories[categoryIndex]] ?? "## [Title]\n--------------------------------------\n[Entries]\n\n_Page [Page]/[Total Pages] • π_";
+  const content = applyTemplate(template, { Title: title, Entries: lines.join("\n") || "No activity yet.", Page: safePage + 1, "Total Pages": totalPages });
   if (interaction.isButton()) await interaction.update({ content, components: [row] });
   else if (interaction.isChatInputCommand() || interaction.isStringSelectMenu()) {
     await interaction.reply({ content, components: [row] });
@@ -106,7 +125,9 @@ function helpText() {
     "`!setup` — open guild setup controls",
     "`!announce [#channel]` — configure weekly announcement destination",
     "`!setstaff [role]` / `!setadmin [role]` — exclude staff/admin roles from announcement rankings",
-    "`!status` — bot status panel; `!say [message] [repeat] [#channel]` — owner broadcast",
+    "`!status` — owner status panel; `!status <online|idle|dnd|invisible> <playing|streaming|listening|watching|vr> <message>`",
+    "`!format levelup|rank|weekly <text>` or `!format leaderboard <category> <text>` — owner-only format editing",
+    "`!say [message] [repeat] [#channel]` — owner broadcast",
     "All settings and XP are separate for every server. Commands reply with normal messages, not embeds.",
   ].join("\n");
 }
@@ -120,7 +141,13 @@ async function rankText(guildId: string, userId: string, displayName: string) {
   const all = await leaderboard(guildId, "allTime");
   const weekly = await leaderboard(guildId, "weeklyMessage");
   const voice = await leaderboard(guildId, "weeklyVoice");
-  return `## <a:stats:1526828029790130217> ∫ ${displayName}'s Stats\n**Level ${row.level} • ${row.xp}/ ${next} XP • ${percent}%**\n${progressBar(percent)}\n<a:cup:1526827406160298036> Leaderboard Rank: #${all.findIndex(x => x.user_id === userId) + 1}\n<:cal:1526827284923678791> Weekly Rank: <a:Chat:1526829172838633472> #${weekly.findIndex(x => x.user_id === userId) + 1} • <:Staffvcmod_SG:1526829293123141733> #${voice.findIndex(x => x.user_id === userId) + 1}`;
+  const template = config.rankFormat ?? defaultConfig.rankFormat!;
+  return `## <a:stats:1526828029790130217> ∫ ${displayName}'s Stats\n${applyTemplate(template, {
+    "User_Name": displayName, Level: row.level, "Current XP": row.xp, "XP Goal": next, Percentage: percent,
+    "Progress Bar": progressBar(percent), "All Time Rank": all.findIndex(x => x.user_id === userId) + 1,
+    "Weekly Message Rank": weekly.findIndex(x => x.user_id === userId) + 1,
+    "Weekly Voice Rank": voice.findIndex(x => x.user_id === userId) + 1,
+  })}`;
 }
 
 async function handleAdmin(guild: NonNullable<Interaction["guild"]>, actorId: string, action: string, targetId: string, amount?: number) {
@@ -212,15 +239,32 @@ async function processPrefix(message: import("discord.js").Message, command: str
   if (command === "status" && message.author.id === OWNER_ID) {
     if (args[0] && ["online", "idle", "dnd", "invisible"].includes(args[0].toLowerCase())) {
       const status = args[0].toLowerCase() as "online" | "idle" | "dnd" | "invisible";
-      const statusMessage = args.slice(1).join(" ") || "leveling up the server";
-      await updateConfig(message.guild.id, { statusType: status, statusMessage });
-      await client.user?.setPresence({ activities: [{ name: statusMessage, type: ActivityType.Playing }], status });
-      return message.reply(`Bot status set to ${status}: ${statusMessage}`);
+      const activityType = args[1]?.toLowerCase() ?? "playing";
+      const statusMessage = args.slice(2).join(" ") || "leveling up the server";
+      if (!["streaming", "vr", "playing", "listening", "watching"].includes(activityType)) return message.reply("Activity must be streaming, vr, playing, listening, or watching.");
+      await updateConfig(message.guild.id, { statusType: status, activityType: activityType as "streaming" | "vr" | "playing" | "listening" | "watching", statusMessage });
+      await setBotPresence(activityType, statusMessage, status);
+      return message.reply(`Bot status set to ${status} / ${activityType}: ${statusMessage}`);
     }
-    const menu = new StringSelectMenuBuilder().setCustomId("statusmenu").setPlaceholder("Choose bot presence").addOptions(
-      ["online", "idle", "dnd", "invisible"].map(value => ({ label: value, value })),
+    const menu = new StringSelectMenuBuilder().setCustomId("statusmenu").setPlaceholder("Choose status and activity").addOptions(
+      ["online", "idle", "dnd", "invisible"].flatMap(status => ["playing", "streaming", "listening", "watching", "vr"].map(activity => ({ label: `${status} / ${activity}`, value: `${status}:${activity}` }))),
     );
-    return message.reply({ content: "Owner status panel — choose a presence, then use `!status <type> <message>` to set its text.", components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] });
+    return message.reply({ content: "Owner status panel — choose a status/activity, then use `!status <online|idle|dnd|invisible> <streaming|vr|playing|listening|watching> <message>` to set its text.", components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] });
+  }
+  if (command === "format" && message.author.id === OWNER_ID) {
+    const formatName = args.shift()?.toLowerCase();
+    if (!formatName) return message.reply("Use `!format levelup <text>`, `!format rank <text>`, `!format leaderboard <category> <text>`, or `!format weekly <text>`.");
+    const config = await getConfig(message.guild.id);
+    if (formatName === "leaderboard") {
+      const category = args.shift()?.toLowerCase();
+      const categoryKey = categories.find(value => value.toLowerCase() === category);
+      if (!categoryKey || !args.length) return message.reply(`Category must be one of: ${categories.join(", ")}.`);
+      await updateConfig(message.guild.id, { leaderboardFormats: { ...config.leaderboardFormats, [categoryKey]: args.join(" ") } });
+    } else if (formatName === "levelup" && args.length) await updateConfig(message.guild.id, { levelUpFormat: args.join(" ") });
+    else if (formatName === "rank" && args.length) await updateConfig(message.guild.id, { rankFormat: args.join(" ") });
+    else if (formatName === "weekly" && args.length) await updateConfig(message.guild.id, { weeklyAnnouncementFormat: args.join(" ") });
+    else return message.reply("Use `!format levelup <text>`, `!format rank <text>`, `!format leaderboard <category> <text>`, or `!format weekly <text>`.");
+    return message.reply("Format updated for this server.");
   }
   const noPrefix = await hasNoPrefix(message.guild.id, message.author.id, message.member?.roles.cache.map(r => r.id) ?? []);
   if (noPrefix) return processPrefix(message, command, args);
@@ -241,10 +285,11 @@ async function interactionHandler(interaction: Interaction) {
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("lbmenu:")) return sendLeaderboard(interaction, Number(interaction.values[0]), 0);
   if (interaction.isStringSelectMenu() && interaction.customId === "statusmenu") {
     if (interaction.user.id !== OWNER_ID) return interaction.reply("Only the bot owner can change status.");
-    const selected = interaction.values[0] as "online" | "idle" | "dnd" | "invisible";
-    await client.user?.setPresence({ activities: [{ name: (await getConfig(interaction.guild.id)).statusMessage, type: ActivityType.Playing }], status: selected });
-    await updateConfig(interaction.guild.id, { statusType: selected });
-    return interaction.reply(`Bot presence set to ${selected}.`);
+    const [selected, activityType] = interaction.values[0].split(":");
+    const config = await getConfig(interaction.guild.id);
+    await setBotPresence(activityType, config.statusMessage, selected as "online" | "idle" | "dnd" | "invisible");
+    await updateConfig(interaction.guild.id, { statusType: selected as "online" | "idle" | "dnd" | "invisible", activityType: activityType as "streaming" | "vr" | "playing" | "listening" | "watching" });
+    return interaction.reply(`Bot presence set to ${selected} / ${activityType}. Its message is still "${config.statusMessage}".`);
   }
   if (!interaction.isChatInputCommand()) return;
   const name = interaction.commandName;
@@ -279,13 +324,13 @@ async function interactionHandler(interaction: Interaction) {
 
 client.once(Events.ClientReady, async ready => {
   logger.info({ tag: ready.user.tag }, "Discord bot ready");
-  await ready.user.setPresence({ activities: [{ name: "leveling up the server", type: ActivityType.Playing }], status: "online" });
+  await setBotPresence("playing", "leveling up the server", "online");
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN!);
   await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID!), { body: slashCommands });
 });
 
 client.on(Events.InteractionCreate, interaction => interactionHandler(interaction).catch(err => logger.error({ err }, "Discord interaction failed")));
-client.on(Events.MessageCreate, message => {
+client.on(Events.MessageCreate, async message => {
   if (message.content.startsWith("!")) {
     const parts = message.content.slice(1).trim().split(/\s+/);
     const command = parts.shift()?.toLowerCase();
@@ -293,15 +338,27 @@ client.on(Events.MessageCreate, message => {
     return;
   }
   if (message.guild && !message.author.bot) {
+    const noPrefixParts = message.content.trim().split(/\s+/);
+    const noPrefixCommand = noPrefixParts.shift()?.toLowerCase();
+    if (noPrefixCommand && prefixlessCommands.has(noPrefixCommand)) {
+      const enabled = await hasNoPrefix(message.guild.id, message.author.id, message.member?.roles.cache.map(r => r.id) ?? []);
+      if (enabled) {
+        await processPrefix(message, noPrefixCommand, noPrefixParts);
+        return;
+      }
+    }
     getConfig(message.guild.id).then(async config => {
-      if (config.blockedUsersChat.includes(message.author.id) || config.blockedMessageChannels.includes(message.channel.id)) return;
+      if (config.blockedUsersChat.includes(message.author.id) || config.blockedMessageChannels.includes(message.channel.id) || (config.allowedMessageChannels.length > 0 && !config.allowedMessageChannels.includes(message.channel.id))) return;
       const booster = message.member?.roles.cache.has(config.boosterRoleId ?? "") ? config.boosterAmount : 0;
       await addChatXp(message.guild!.id, message.author.id, message.author.username, config.chatXp + booster);
       const level = await levelCheck(message.guild!.id, message.author.id, message.author.username, message.member ?? undefined);
       if (level && config.levelUpChannelId) {
         const channel = message.guild!.channels.cache.get(config.levelUpChannelId);
         if (channel?.isTextBased() && "send" in channel) {
-          await channel.send(`<:SC_Rankings:1526826834040193116> ** ${message.author} Congratulations! You Just Reached Level ${level} **\n<a:Stars:1526827005729964094> Keep Grinding To Obtain More Perks By Leveling Up In ${config.mainChannelId ? `<#${config.mainChannelId}>` : "the main channel"} And To Be In List Of Active Members!`);
+          const text = config.levelUpFormat
+            ? applyTemplate(config.levelUpFormat, { User: message.author.toString(), "User Mention": message.author.toString(), Level: level, "Main Channel": config.mainChannelId ? `<#${config.mainChannelId}>` : "the main channel" })
+            : `<:SC_Rankings:1526826834040193116> ** ${message.author} Congratulations! You Just Reached Level ${level} **\n<a:Stars:1526827005729964094> Keep Grinding To Obtain More Perks By Leveling Up In ${config.mainChannelId ? `<#${config.mainChannelId}>` : "the main channel"} And To Be In List Of Active Members!`;
+          await channel.send(text);
         }
       }
     }).catch(err => logger.error({ err }, "Discord XP update failed"));
@@ -335,22 +392,23 @@ setInterval(async () => {
       const guild = client.guilds.cache.get(guildId);
       const channel = guild?.channels.cache.get(config.weeklyAnnouncementChannelId);
       if (guild && channel?.isTextBased()) {
+        const currentGuild = guild;
         const chatRows = await leaderboard(guildId, "weeklyMessage");
         const voiceRows = await leaderboard(guildId, "weeklyVoice");
         const excluded = (row: { user_id: string }) => {
-          const member = guild.members.cache.get(row.user_id);
+          const member = currentGuild.members.cache.get(row.user_id);
           return !member || member.roles.cache.some(role => config.adminRoles.includes(role.id));
         };
         const normalChat = chatRows.filter(excluded).filter(row => {
-          const member = guild.members.cache.get(row.user_id);
+          const member = currentGuild.members.cache.get(row.user_id);
           return !member?.roles.cache.some(role => config.staffRoles.includes(role.id));
         });
         const normalVoice = voiceRows.filter(excluded).filter(row => {
-          const member = guild.members.cache.get(row.user_id);
+          const member = currentGuild.members.cache.get(row.user_id);
           return !member?.roles.cache.some(role => config.staffRoles.includes(role.id));
         });
-        const staffChat = chatRows.filter(excluded).filter(row => guild.members.cache.get(row.user_id)?.roles.cache.some(role => config.staffRoles.includes(role.id)));
-        const staffVoice = voiceRows.filter(excluded).filter(row => guild.members.cache.get(row.user_id)?.roles.cache.some(role => config.staffRoles.includes(role.id)));
+        const staffChat = chatRows.filter(excluded).filter(row => currentGuild.members.cache.get(row.user_id)?.roles.cache.some(role => config.staffRoles.includes(role.id)));
+        const staffVoice = voiceRows.filter(excluded).filter(row => currentGuild.members.cache.get(row.user_id)?.roles.cache.some(role => config.staffRoles.includes(role.id)));
         const chat = normalChat;
         const voice = normalVoice;
         const text = (config.weeklyAnnouncementFormat ?? defaultConfig.weeklyAnnouncementFormat!)
