@@ -1,0 +1,1 @@
+- [Discord runtime](discord-runtime.md) — the bot shares the API process and must remain safely disabled without its secrets.

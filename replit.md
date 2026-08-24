@@ -1,6 +1,6 @@
-# [Project name]
+# Discord Leveling Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Guild-scoped Discord leveling bot with XP, levels, leaderboards, moderation controls, and weekly announcements.
 
 ## Run & Operate
 
@@ -30,7 +30,7 @@ _Populate as you build — non-obvious choices a reader couldn't infer from the 
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+The API server hosts the Discord bot. Each guild has isolated XP, message/voice totals, no-prefix rules, level roles, filters, and weekly announcements. Commands are available through slash commands and `!` prefix aliases, and bot responses use normal Discord messages unless a Discord component is required for selection/pagination.
 
 ## User preferences
 
