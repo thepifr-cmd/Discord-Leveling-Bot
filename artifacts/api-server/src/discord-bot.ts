@@ -3,6 +3,7 @@ import {
   Interaction, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, ModalBuilder,
   TextInputBuilder, TextInputStyle, PermissionFlagsBits, ChannelType,
+  type Message,
 } from "discord.js";
 import { logger } from "./lib/logger";
 import {
@@ -52,6 +53,48 @@ function progressBar(percent: number) {
 
 function applyTemplate(template: string, values: Record<string, string | number>) {
   return template.replace(/\[([^\]]+)\]/g, (_, key: string) => values[key] === undefined ? `[${key}]` : String(values[key]));
+}
+
+const weeklyVariables = [
+  "[1st Person On Weekly Chat Leaderboard]", "[2nd Person On Weekly Chat Leaderboard]", "[3rd Person On Weekly Chat Leaderboard]",
+  "[1st Person Total Weekly Messages]", "[2nd Person Total Weekly Messages]", "[3rd Person Total Weekly Messages]",
+  "[1st Person On Weekly Voice Leaderboard]", "[2nd Person On Weekly Voice Leaderboard]", "[3rd Person On Weekly Voice Leaderboard]",
+  "[1st Person Total Weekly Voice Time]", "[2nd Person Total Weekly Voice Time]", "[3rd Person Total Weekly Voice Time]",
+  "[Top Staff In Weekly Chat Leaderboard]", "[Top Staff Total Message In Weekly Leaderboard]",
+  "[Top Staff In Weekly Voice Leaderboard]", "[Top Staff Total Voice Time In Weekly Leaderboard]",
+];
+
+function weeklyPreview(format: string) {
+  return applyTemplate(format, {
+    "1st Person On Weekly Chat Leaderboard": "<@111111111111111111>",
+    "2nd Person On Weekly Chat Leaderboard": "<@222222222222222222>",
+    "3rd Person On Weekly Chat Leaderboard": "<@333333333333333333>",
+    "1st Person Total Weekly Messages": 245,
+    "2nd Person Total Weekly Messages": 198,
+    "3rd Person Total Weekly Messages": 157,
+    "1st Person On Weekly Voice Leaderboard": "<@444444444444444444>",
+    "2nd Person On Weekly Voice Leaderboard": "<@555555555555555555>",
+    "3rd Person On Weekly Voice Leaderboard": "<@666666666666666666>",
+    "1st Person Total Weekly Voice Time": 820,
+    "2nd Person Total Weekly Voice Time": 640,
+    "3rd Person Total Weekly Voice Time": 510,
+    "Top Staff In Weekly Chat Leaderboard": "<@777777777777777777>",
+    "Top Staff Total Message In Weekly Leaderboard": 312,
+    "Top Staff In Weekly Voice Leaderboard": "<@888888888888888888>",
+    "Top Staff Total Voice Time In Weekly Leaderboard": 930,
+  });
+}
+
+function weeklyPanel(config: Awaited<ReturnType<typeof getConfig>>) {
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("weekly:format").setLabel("Edit Format").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("weekly:variables").setLabel("View Variables").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("weekly:preview").setLabel("Preview").setStyle(ButtonStyle.Success),
+  );
+  return {
+    content: `## Weekly Announcement Panel\nDestination: ${config.weeklyAnnouncementChannelId ? `<#${config.weeklyAnnouncementChannelId}>` : "Not set"}\n\nCurrent format:\n${config.weeklyAnnouncementFormat ?? defaultConfig.weeklyAnnouncementFormat}\n\nOnly the bot owner can edit this format. Use \`!announce #channel\` to change the destination.`,
+    components: [buttons],
+  };
 }
 
 function presenceType(type: string): { type: ActivityType; url?: string } {
@@ -212,11 +255,13 @@ async function processPrefix(message: import("discord.js").Message, command: str
     else return message.reply(`## Guild Setup\nCurrent chat XP: ${config.chatXp} per message\nCurrent voice XP: ${config.voiceXpPerMinute} per minute\nLevel-up channel: ${config.levelUpChannelId ? `<#${config.levelUpChannelId}>` : "not set"}\nMain channel: ${config.mainChannelId ? `<#${config.mainChannelId}>` : "not set"}\n\nUse \`!setup chatxp <amount>\`, \`!setup voicexp <amount>\`, \`!setup levelupchannel #channel\`, \`!setup mainchannel #channel\`, \`!setup levelrole <level> @role\`, or \`!setup booster @role <amount>\`.\nAll changes apply only to this server.`);
     return message.reply("Guild setup updated.");
   }
-  if (command === "announce" && privileged) {
+  if (command === "announce" && message.author.id === OWNER_ID) {
     const channel = message.mentions.channels.first();
-    if (!channel || channel.type !== ChannelType.GuildText) return message.reply("Mention a text channel.");
-    await updateConfig(message.guild.id, { weeklyAnnouncementChannelId: channel.id });
-    return message.reply(`Weekly leaderboard announcements will be sent to ${channel}.`);
+    if (channel) {
+      if (channel.type !== ChannelType.GuildText) return message.reply("Mention a text channel.");
+      await updateConfig(message.guild.id, { weeklyAnnouncementChannelId: channel.id });
+    }
+    return message.reply(weeklyPanel(await getConfig(message.guild.id)));
   }
   if (command === "setstaff" || command === "setadmin") {
     if (!privileged) return message.reply("Only the server owner or bot owner can use this command.");
@@ -278,6 +323,36 @@ async function sendLeaderboardForMessage(message: import("discord.js").Message) 
 
 async function interactionHandler(interaction: Interaction) {
   if (!interaction.guild) return;
+  if (interaction.isButton() && interaction.customId.startsWith("weekly:")) {
+    if (interaction.user.id !== OWNER_ID) return interaction.reply("Only the bot owner can manage weekly announcements.");
+    const action = interaction.customId.split(":")[1];
+    const config = await getConfig(interaction.guild.id);
+    if (action === "variables") {
+      return interaction.reply(`## Weekly Announcement Variables\n${weeklyVariables.map(variable => `- \`${variable}\``).join("\n")}`);
+    }
+    if (action === "preview") {
+      return interaction.reply(`## Weekly Announcement Preview\n${weeklyPreview(config.weeklyAnnouncementFormat ?? defaultConfig.weeklyAnnouncementFormat!)}`);
+    }
+    if (action === "format") {
+      const modal = new ModalBuilder().setCustomId(`weekly-format:${interaction.guild.id}`).setTitle("Edit Weekly Announcement Format");
+      const input = new TextInputBuilder()
+        .setCustomId("weekly-format-text")
+        .setLabel("Announcement format")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(4000)
+        .setValue(config.weeklyAnnouncementFormat ?? defaultConfig.weeklyAnnouncementFormat!);
+      modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+      return interaction.showModal(modal);
+    }
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("weekly-format:")) {
+    if (interaction.user.id !== OWNER_ID) return interaction.reply("Only the bot owner can edit weekly announcement formats.");
+    const format = interaction.fields.getTextInputValue("weekly-format-text").trim();
+    if (!format) return interaction.reply("The announcement format cannot be empty.");
+    await updateConfig(interaction.guild.id, { weeklyAnnouncementFormat: format });
+    return interaction.reply(`Weekly announcement format saved.\n\nPreview:\n${weeklyPreview(format)}`);
+  }
   if (interaction.isButton() && interaction.customId.startsWith("lb:")) {
     const [, category, page] = interaction.customId.split(":");
     return sendLeaderboard(interaction, Number(category), Number(page));
